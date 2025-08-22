@@ -1,0 +1,20 @@
+# Build artifacts
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+
+# macOS
+.DS_Store
+*.swp
+*.swo
+
+# Demo files
+demo_files/
+
+# Distribution
+dist/
