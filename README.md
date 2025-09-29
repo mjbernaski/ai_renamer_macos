@@ -141,6 +141,34 @@ If LM Studio is running on a different host or port:
 ./AIImageRenamer --cli *.jpg --host localhost --port 1235
 ```
 
+### Run at Startup
+
+To have AI Image Renamer launch automatically when you log into your Mac:
+
+1. **Create a Launch Agent** (already done if you followed installation):
+   ```bash
+   # The launch agent file is located at:
+   ~/Library/LaunchAgents/com.airenamer.plist
+   ```
+
+2. **Enable automatic startup:**
+   ```bash
+   launchctl load ~/Library/LaunchAgents/com.airenamer.plist
+   ```
+
+3. **Disable automatic startup:**
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.airenamer.plist
+   ```
+
+4. **Remove startup configuration completely:**
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.airenamer.plist
+   rm ~/Library/LaunchAgents/com.airenamer.plist
+   ```
+
+The app will launch in GUI mode by default when started automatically at login.
+
 ## 📁 Project Structure
 
 ```
