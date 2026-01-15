@@ -37,7 +37,7 @@ struct LMStudioModelsResponse: Codable {
 class LMStudioClient {
     private let baseURL: String
     private let session: URLSession
-    private var currentModel: String?
+    private(set) var currentModel: String?
     
     init(host: String = "127.0.0.1", port: Int = 1234) {
         self.baseURL = "http://\(host):\(port)"
@@ -46,14 +46,22 @@ class LMStudioClient {
     
     func testConnection() async -> Bool {
         guard let url = URL(string: "\(baseURL)/v1/models") else { return false }
-        
+
         do {
             let (data, response) = try await session.data(from: url)
-            
+
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else { return false }
-            
+
             let modelsResponse = try JSONDecoder().decode(LMStudioModelsResponse.self, from: data)
+
+            // Prefer qwen/qwen2.5-vl-7b if available
+            if let preferredModel = modelsResponse.data.first(where: { $0.id.contains("qwen2.5-vl-7b") || $0.id.contains("qwen/qwen2.5-vl-7b") }) {
+                currentModel = preferredModel.id
+                return true
+            }
+
+            // Fallback to first available model
             if let firstModel = modelsResponse.data.first {
                 currentModel = firstModel.id
                 return true
@@ -61,7 +69,7 @@ class LMStudioClient {
         } catch {
             print("❌ Connection test failed: \(error)")
         }
-        
+
         return false
     }
     
@@ -186,26 +194,36 @@ class LMStudioClient {
             let lmResponse = try JSONDecoder().decode(LMStudioResponse.self, from: data)
             let content = lmResponse.choices.first?.message.content ?? ""
             
-            return parseFilenameResponse(from: content)
+            let result = parseFilenameResponse(from: content)
+            if result == nil {
+                print("❌ Failed to parse JSON response. Raw content: \(content.prefix(200))...")
+            }
+            return result
         } catch {
             print("❌ Request failed: \(error)")
+            if let data = request.httpBody,
+               let requestString = String(data: data, encoding: .utf8) {
+                print("Request body: \(requestString.prefix(200))...")
+            }
             return nil
         }
     }
     
     private func parseFilenameResponse(from content: String) -> FilenameResponse? {
-        // Try to extract JSON from the response
-        if let jsonStart = content.range(of: "{"),
-           let jsonEnd = content.range(of: "}", range: jsonStart.upperBound..<content.endIndex) {
-            let jsonString = String(content[jsonStart.lowerBound...jsonEnd.upperBound])
-            
-            if let jsonData = jsonString.data(using: .utf8),
-               let response = try? JSONDecoder().decode(FilenameResponse.self, from: jsonData) {
-                return FilenameResponse(
-                    suggestedFilename: sanitizeFilename(response.suggestedFilename),
-                    reasoning: response.reasoning,
-                    confidence: response.confidence
-                )
+        // Try to extract JSON from the response using proper brace matching
+        if let jsonString = extractJsonFromText(content) {
+            if let jsonData = jsonString.data(using: .utf8) {
+                do {
+                    let response = try JSONDecoder().decode(FilenameResponse.self, from: jsonData)
+                    return FilenameResponse(
+                        suggestedFilename: sanitizeFilename(response.suggestedFilename),
+                        reasoning: response.reasoning,
+                        confidence: response.confidence
+                    )
+                } catch {
+                    print("❌ JSON decode error: \(error)")
+                    print("Attempted to parse: \(jsonString)")
+                }
             }
         }
         
@@ -228,7 +246,55 @@ class LMStudioClient {
         
         return nil
     }
-    
+
+    private func extractJsonFromText(_ text: String) -> String? {
+        // First, try to extract from markdown code blocks
+        let patterns = [
+            "```json\\s*([\\s\\S]*?)```",
+            "```\\s*([\\s\\S]*?)```",
+            "\\{[\\s\\S]*\\}"
+        ]
+
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                if let match = regex.firstMatch(in: text, options: [], range: range) {
+                    let matchRange = match.range(at: match.numberOfRanges - 1)
+                    if let swiftRange = Range(matchRange, in: text) {
+                        let extractedText = String(text[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                        // Ensure it starts with { for JSON validation
+                        if extractedText.hasPrefix("{") {
+                            return extractedText
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback to original brace matching logic
+        guard let startIndex = text.firstIndex(of: "{") else { return nil }
+
+        var braceCount = 0
+        var currentIndex = startIndex
+
+        while currentIndex < text.endIndex {
+            let char = text[currentIndex]
+            if char == "{" {
+                braceCount += 1
+            } else if char == "}" {
+                braceCount -= 1
+                if braceCount == 0 {
+                    // Found matching closing brace
+                    let jsonString = String(text[startIndex...currentIndex])
+                    return jsonString
+                }
+            }
+            currentIndex = text.index(after: currentIndex)
+        }
+
+        return nil
+    }
+
     private func sanitizeFilename(_ filename: String) -> String {
         var sanitized = filename
         

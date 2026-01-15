@@ -4,59 +4,141 @@ import UniformTypeIdentifiers
 @available(macOS 14.0, *)
 struct ContentView: View {
     @StateObject private var viewModel: ContentViewModel
-    
+
     init(host: String, port: Int) {
         _viewModel = StateObject(wrappedValue: ContentViewModel(host: host, port: port))
     }
-    
+
     var body: some View {
-        VStack(spacing: 20) {
-            // Header
-            VStack(spacing: 8) {
-                Text("🤖 AI Image Renamer")
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
-                
-                Text("Drag & drop files or click to select • Images & PDFs supported")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+        if viewModel.isExpanded {
+            ExpandedView(viewModel: viewModel)
+                .frame(minWidth: 320, minHeight: 380)
+                .transition(.asymmetric(
+                    insertion: .scale.combined(with: .opacity),
+                    removal: .scale.combined(with: .opacity)
+                ))
+        } else {
+            CompactDropView(viewModel: viewModel)
+                .frame(width: 200, height: 150)
+                .transition(.asymmetric(
+                    insertion: .scale.combined(with: .opacity),
+                    removal: .scale.combined(with: .opacity)
+                ))
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+struct CompactDropView: View {
+    @ObservedObject var viewModel: ContentViewModel
+
+    var body: some View {
+        VStack(spacing: 10) {
+            // Compact header
+            VStack(spacing: 4) {
+                Text("AI Renamer")
+                    .font(.system(size: 14, weight: .semibold))
+
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(viewModel.isConnected ? Color.green : Color.red)
+                        .frame(width: 5, height: 5)
+                    Text(viewModel.isConnected ? "Ready" : "Offline")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+
+                if !viewModel.modelName.isEmpty {
+                    Text(viewModel.modelName)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
-            .padding(.top)
-            
-            // Connection Status
-            HStack {
-                Circle()
-                    .fill(viewModel.isConnected ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
-                
-                Text(viewModel.connectionStatus)
-                    .font(.caption)
-                    .foregroundColor(viewModel.isConnected ? .green : .red)
-                
-                Spacer()
+
+            // Compact drop zone
+            RoundedRectangle(cornerRadius: 10)
+                .fill(viewModel.isDragOver ? Color.blue.opacity(0.1) : Color.gray.opacity(0.1))
+                .stroke(
+                    viewModel.isDragOver ? Color.blue : Color.gray.opacity(0.3),
+                    style: StrokeStyle(lineWidth: 1.5, dash: [6, 3])
+                )
+                .overlay(
+                    VStack(spacing: 4) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 24))
+                            .foregroundColor(.secondary)
+                        Text("Drop files here")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                )
+                .onDrop(of: [.fileURL], isTargeted: $viewModel.isDragOver) { providers in
+                    _ = viewModel.handleDrop(providers: providers)
+                    return true
+                }
+
+            // Browse button
+            Button(action: { viewModel.selectFiles() }) {
+                Label("Browse", systemImage: "folder")
+                    .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal)
-            
-            // File Drop Zone
-            VStack(spacing: 16) {
-                // Drop zone
-                RoundedRectangle(cornerRadius: 12)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding()
+        .task {
+            await viewModel.testConnection()
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+struct ExpandedView: View {
+    @ObservedObject var viewModel: ContentViewModel
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Ultra-compact header
+            VStack(spacing: 6) {
+                Text("AI Renamer")
+                    .font(.system(size: 16, weight: .semibold))
+
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(viewModel.isConnected ? Color.green : Color.red)
+                        .frame(width: 5, height: 5)
+                    Text(viewModel.isConnected ? "Ready" : "Offline")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+
+                if !viewModel.modelName.isEmpty {
+                    Text(viewModel.modelName)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .padding(.top, 8)
+
+            // Vertical Drop Zone for narrow width
+            VStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 10)
                     .fill(viewModel.isDragOver ? Color.blue.opacity(0.1) : Color.gray.opacity(0.1))
                     .stroke(
                         viewModel.isDragOver ? Color.blue : Color.gray.opacity(0.3),
-                        style: StrokeStyle(lineWidth: 2, dash: [8, 4])
+                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 3])
                     )
-                    .frame(height: 120)
+                    .frame(height: 60)
                     .overlay(
-                        VStack(spacing: 8) {
+                        VStack(spacing: 4) {
                             Image(systemName: "photo.on.rectangle.angled")
-                                .font(.system(size: 32))
+                                .font(.system(size: 20))
                                 .foregroundColor(.secondary)
-                            
-                            Text("Drag & Drop Files Here")
-                                .font(.headline)
-                            
-                            Text("Images: jpg, png, gif, bmp, tiff • PDFs")
+                            Text("Drop files or click Browse")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -65,84 +147,80 @@ struct ContentView: View {
                         _ = viewModel.handleDrop(providers: providers)
                         return true
                     }
-                
-                // Select Files Button
-                Button("📂 Select Files") {
-                    viewModel.selectFiles()
+
+                Button(action: { viewModel.selectFiles() }) {
+                    Label("Browse Files", systemImage: "folder")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                
-                // Selected Files List
-                if !viewModel.selectedFiles.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Selected Files:")
-                            .font(.headline)
-                        
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 2) {
-                                ForEach(viewModel.selectedFiles, id: \.self) { file in
-                                    Text("• \(URL(fileURLWithPath: file).lastPathComponent)")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                        }
-                        .frame(maxHeight: 100)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                    .background(Color.gray.opacity(0.1))
-                    .cornerRadius(8)
-                }
+                .controlSize(.small)
             }
             .padding(.horizontal)
-            
-            // Results Area
-            VStack(alignment: .leading, spacing: 8) {
-                Text("🎯 AI Suggestions")
-                    .font(.headline)
-                
+
+            // Minimal file count indicator
+            if !viewModel.selectedFiles.isEmpty {
+                Text("\(viewModel.selectedFiles.count) file\(viewModel.selectedFiles.count == 1 ? "" : "s") selected")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+            }
+
+            // Compact Results Area
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Label("Output", systemImage: "text.alignleft")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+
                 ScrollView {
                     Text(viewModel.resultsText)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
+                        .padding(6)
                 }
-                .background(Color.black.opacity(0.05))
-                .cornerRadius(8)
-                .frame(minHeight: 200)
+                .background(Color.black.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 0.5)
+                )
+                .cornerRadius(6)
+                .frame(minHeight: 120)
             }
             .padding(.horizontal)
-            
-            // Action Buttons
-            HStack(spacing: 12) {
-                Button("🤖 Get AI Suggestions") {
-                    Task {
-                        await viewModel.processFiles()
+
+            // Vertical button stack for narrow width
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Button(action: { Task { await viewModel.processFiles() } }) {
+                        Label("Analyze", systemImage: "sparkles")
+                            .frame(maxWidth: .infinity)
                     }
-                }
-                .disabled(!viewModel.canProcess)
-                .buttonStyle(.borderedProminent)
-                
-                Button("✅ Rename Files") {
-                    Task {
-                        await viewModel.renameFiles()
+                    .disabled(!viewModel.canProcess)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button(action: { Task { await viewModel.renameFiles() } }) {
+                        Label("Rename", systemImage: "checkmark")
+                            .frame(maxWidth: .infinity)
                     }
+                    .disabled(!viewModel.canRename)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button(action: { viewModel.clearAll() }) {
+                        Image(systemName: "trash")
+                            .frame(width: 20)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear")
                 }
-                .disabled(!viewModel.canRename)
-                .buttonStyle(.bordered)
-                
-                Spacer()
-                
-                Button("🗑️ Clear") {
-                    viewModel.clearAll()
-                }
-                .buttonStyle(.bordered)
             }
             .padding(.horizontal)
-            .padding(.bottom)
+            .padding(.bottom, 8)
         }
-        .frame(minWidth: 600, minHeight: 500)
         .task {
             await viewModel.testConnection()
         }
@@ -155,10 +233,12 @@ class ContentViewModel: ObservableObject {
     @Published var resultsText: String = ""
     @Published var isConnected: Bool = false
     @Published var connectionStatus: String = "🔄 Connecting to LM Studio..."
+    @Published var modelName: String = ""
     @Published var isDragOver: Bool = false
     @Published var canProcess: Bool = false
     @Published var canRename: Bool = false
     @Published var isProcessing: Bool = false
+    @Published var isExpanded: Bool = false
     
     private let client: LMStudioClient
     private var suggestions: [FilenameResponse?] = []
@@ -170,12 +250,13 @@ class ContentViewModel: ObservableObject {
     func testConnection() async {
         let connected = await client.testConnection()
         isConnected = connected
-        connectionStatus = connected ? 
-            "✅ Connected to LM Studio" : 
-            "❌ Cannot connect to LM Studio at 127.0.0.1:1234"
-        
+        connectionStatus = connected ?
+            "Connected" :
+            "Cannot connect"
+        modelName = client.currentModel ?? ""
+
         if !connected {
-            logMessage("❌ Connection Failed\nMake sure LM Studio is running with a model loaded and local server enabled.\n")
+            logMessage("❌ Connection Failed - Check LM Studio is running\n")
         }
     }
     
@@ -213,18 +294,33 @@ class ContentViewModel: ObservableObject {
     
     private func addFiles(_ files: [String]) {
         let validExtensions = Set(["jpg", "jpeg", "png", "gif", "bmp", "tiff", "pdf"])
-        
+
         for filePath in files {
             let url = URL(fileURLWithPath: filePath)
             let ext = url.pathExtension.lowercased()
-            
+
             if validExtensions.contains(ext) && !selectedFiles.contains(filePath) {
                 selectedFiles.append(filePath)
             }
         }
-        
+
         canProcess = !selectedFiles.isEmpty && isConnected
-        logMessage("📁 Added \(files.count) file(s). Total: \(selectedFiles.count)\n")
+        if !selectedFiles.isEmpty {
+            logMessage("Added \(files.count) file(s)\n")
+            // Expand the view when files are added
+            withAnimation(.easeInOut(duration: 0.3)) {
+                isExpanded = true
+            }
+            // Trigger window resize
+            NotificationCenter.default.post(name: .expandWindow, object: nil)
+
+            // Auto-analyze when files are added
+            if isConnected && !isProcessing {
+                Task {
+                    await processFiles()
+                }
+            }
+        }
     }
     
     func processFiles() async {
@@ -235,17 +331,17 @@ class ContentViewModel: ObservableObject {
         canRename = false
         suggestions = []
         
-        logMessage("🤖 Getting AI suggestions...\n")
+        logMessage("Analyzing files...\n")
         
         for (index, filePath) in selectedFiles.enumerated() {
             let fileName = URL(fileURLWithPath: filePath).lastPathComponent
-            logMessage("Processing \(index + 1)/\(selectedFiles.count): \(fileName)")
+            logMessage("[\(index + 1)/\(selectedFiles.count)] \(fileName)")
             
             // Determine file type
             let url = URL(fileURLWithPath: filePath)
             guard let fileType = FileType.from(extension: url.pathExtension) else {
                 suggestions.append(nil)
-                logMessage("  ❌ Unsupported file type\n")
+                logMessage(" → Unsupported\n")
                 continue
             }
             
@@ -254,11 +350,9 @@ class ContentViewModel: ObservableObject {
             suggestions.append(suggestion)
             
             if let suggestion = suggestion {
-                logMessage("  ✅ Suggested: \(suggestion.suggestedFilename)")
-                logMessage("  💭 Reasoning: \(suggestion.reasoning)")
-                logMessage("  📊 Confidence: \(suggestion.confidence)/5\n")
+                logMessage(" → \(suggestion.suggestedFilename) (\(suggestion.confidence)/5)\n")
             } else {
-                logMessage("  ❌ Failed to get suggestion\n")
+                logMessage(" → Failed\n")
             }
         }
         
@@ -266,7 +360,7 @@ class ContentViewModel: ObservableObject {
         canProcess = true
         canRename = suggestions.contains { $0 != nil }
         
-        logMessage("✅ Processing complete!\n")
+        logMessage("Analysis complete\n")
     }
     
     func renameFiles() async {
@@ -285,7 +379,7 @@ class ContentViewModel: ObservableObject {
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
         
-        logMessage("🔄 Renaming files...\n")
+        logMessage("Renaming...\n")
         
         var renamedCount = 0
         
@@ -305,19 +399,19 @@ class ContentViewModel: ObservableObject {
             
             do {
                 try FileManager.default.moveItem(at: originalURL, to: newURL)
-                logMessage("✅ \(originalURL.lastPathComponent) → \(newURL.lastPathComponent)")
+                logMessage("✓ \(originalURL.lastPathComponent) → \(newURL.lastPathComponent)")
                 
                 if newURL.lastPathComponent != suggestion.suggestedFilename + "." + fileExtension {
-                    logMessage("  (sequence number added)")
+                    logMessage(" (seq)")
                 }
                 
                 renamedCount += 1
             } catch {
-                logMessage("❌ Failed to rename \(originalURL.lastPathComponent): \(error.localizedDescription)")
+                logMessage("✗ \(originalURL.lastPathComponent)")
             }
         }
         
-        logMessage("\n🎉 Successfully renamed \(renamedCount) file(s)!\n")
+        logMessage("\nRenamed \(renamedCount) file(s)\n")
         clearAll()
     }
     
@@ -327,7 +421,13 @@ class ContentViewModel: ObservableObject {
         resultsText = ""
         canProcess = isConnected
         canRename = false
-        logMessage("🗑️ Cleared all files and results.\n")
+        logMessage("")
+        // Collapse back to compact view
+        withAnimation(.easeInOut(duration: 0.3)) {
+            isExpanded = false
+        }
+        // Trigger window resize
+        NotificationCenter.default.post(name: .collapseWindow, object: nil)
     }
     
     private func logMessage(_ message: String) {
@@ -360,4 +460,9 @@ class ContentViewModel: ObservableObject {
         let fallbackName = "\(suggestedName)_\(timestamp)"
         return directory.appendingPathComponent(fallbackName).appendingPathExtension(fileExtension)
     }
+}
+
+extension Notification.Name {
+    static let expandWindow = Notification.Name("expandWindow")
+    static let collapseWindow = Notification.Name("collapseWindow")
 }

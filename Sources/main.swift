@@ -18,7 +18,7 @@ struct AIImageRenamer: ParsableCommand {
     @Flag(name: .shortAndLong, help: "Run in command-line mode (no GUI)")
     var cli: Bool = false
     
-    @Option(name: .shortAndLong, help: "LM Studio host")
+    @Option(name: .long, help: "LM Studio host")
     var host: String = "127.0.0.1"
     
     @Option(name: .shortAndLong, help: "LM Studio port")
@@ -32,16 +32,31 @@ struct AIImageRenamer: ParsableCommand {
     
     @Argument(help: "Files to process (CLI mode only)")
     var files: [String] = []
-    
-    func run() async throws {
+
+
+    func run() throws {
         if cli {
-            try await runCLI()
+            runCLISync()
         } else {
             // Force GUI mode when no CLI flag is provided
             try runGUI()
         }
     }
     
+    private func runCLISync() {
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            do {
+                let processor = FileProcessor(host: host, port: port)
+                try await processor.processFiles(files, dryRun: dryRun, autoApprove: autoApprove)
+            } catch {
+                print("Error: \(error)")
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+    }
+
     private func runCLI() async throws {
         let processor = FileProcessor(host: host, port: port)
         try await processor.processFiles(files, dryRun: dryRun, autoApprove: autoApprove)
