@@ -234,6 +234,7 @@ class ContentViewModel: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var connectionStatus: String = "🔄 Connecting to LM Studio..."
     @Published var modelName: String = ""
+    private var pendingAutoRename: Bool = false
     @Published var isDragOver: Bool = false
     @Published var canProcess: Bool = false
     @Published var canRename: Bool = false
@@ -277,17 +278,31 @@ class ContentViewModel: ObservableObject {
     }
     
     func handleDrop(providers: [NSItemProvider]) -> Bool {
+        // Check if shift key is held - if so, don't auto-rename
+        let shiftHeld = NSEvent.modifierFlags.contains(.shift)
+        pendingAutoRename = !shiftHeld
+
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var collected: [String] = []
+
         for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
-                    if let data = item as? Data,
-                       let url = URL(dataRepresentation: data, relativeTo: nil) {
-                        DispatchQueue.main.async {
-                            self.addFiles([url.path])
-                        }
-                    }
+            guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { continue }
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                defer { group.leave() }
+                if let data = item as? Data,
+                   let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    lock.lock()
+                    collected.append(url.path)
+                    lock.unlock()
                 }
             }
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self, !collected.isEmpty else { return }
+            self.addFiles(collected)
         }
         return true
     }
@@ -324,8 +339,9 @@ class ContentViewModel: ObservableObject {
     }
     
     func processFiles() async {
+        guard !isProcessing else { return }
         guard !selectedFiles.isEmpty, isConnected else { return }
-        
+
         isProcessing = true
         canProcess = false
         canRename = false
@@ -346,71 +362,83 @@ class ContentViewModel: ObservableObject {
             }
             
             // Get suggestion
-            let suggestion = await client.suggestFilename(for: filePath, fileType: fileType)
-            suggestions.append(suggestion)
-            
-            if let suggestion = suggestion {
+            do {
+                let suggestion = try await client.suggestFilename(for: filePath, fileType: fileType)
+                suggestions.append(suggestion)
                 logMessage(" → \(suggestion.suggestedFilename) (\(suggestion.confidence)/5)\n")
-            } else {
-                logMessage(" → Failed\n")
+            } catch {
+                suggestions.append(nil)
+                logMessage(" → Failed: \(error.localizedDescription)\n")
             }
         }
         
         isProcessing = false
         canProcess = true
         canRename = suggestions.contains { $0 != nil }
-        
+
         logMessage("Analysis complete\n")
+
+        // Auto-rename if shift wasn't held during drop
+        if pendingAutoRename && canRename {
+            pendingAutoRename = false
+            await performRename(skipConfirmation: true)
+        }
     }
     
     func renameFiles() async {
+        await performRename(skipConfirmation: false)
+    }
+
+    private func performRename(skipConfirmation: Bool) async {
         guard !selectedFiles.isEmpty, !suggestions.isEmpty else { return }
-        
+
         let validSuggestions = suggestions.compactMap { $0 }.count
-        
-        // Show confirmation dialog
-        let alert = NSAlert()
-        alert.messageText = "Confirm Rename"
-        alert.informativeText = "Rename \(validSuggestions) file(s) based on AI suggestions?\n\nThis will rename the actual files on your disk.\nMake sure you have backups if needed."
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-        
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return }
-        
+
+        if !skipConfirmation {
+            // Show confirmation dialog
+            let alert = NSAlert()
+            alert.messageText = "Confirm Rename"
+            alert.informativeText = "Rename \(validSuggestions) file(s) based on AI suggestions?\n\nThis will rename the actual files on your disk.\nMake sure you have backups if needed."
+            alert.addButton(withTitle: "Rename")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+
+            let response = alert.runModal()
+            guard response == .alertFirstButtonReturn else { return }
+        }
+
         logMessage("Renaming...\n")
-        
+
         var renamedCount = 0
-        
+
         for (index, filePath) in selectedFiles.enumerated() {
             guard index < suggestions.count,
                   let suggestion = suggestions[index] else { continue }
-            
+
             let originalURL = URL(fileURLWithPath: filePath)
             _ = originalURL.deletingLastPathComponent()
             let fileExtension = originalURL.pathExtension
-            
+
             // Find available filename
             let newURL = findAvailableFilename(
                 baseURL: originalURL,
                 suggestedName: suggestion.suggestedFilename
             )
-            
+
             do {
                 try FileManager.default.moveItem(at: originalURL, to: newURL)
                 logMessage("✓ \(originalURL.lastPathComponent) → \(newURL.lastPathComponent)")
-                
+
                 if newURL.lastPathComponent != suggestion.suggestedFilename + "." + fileExtension {
                     logMessage(" (seq)")
                 }
-                
+
                 renamedCount += 1
             } catch {
                 logMessage("✗ \(originalURL.lastPathComponent)")
             }
         }
-        
+
         logMessage("\nRenamed \(renamedCount) file(s)\n")
         clearAll()
     }

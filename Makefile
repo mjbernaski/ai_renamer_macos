@@ -19,6 +19,7 @@ help:
 	@echo "  format      - Format Swift code"
 	@echo "  lint        - Lint Swift code"
 	@echo "  deps        - Show dependencies"
+	@echo "  dmg         - Create distributable DMG file"
 	@echo "  help        - Show this help message"
 	@echo ""
 	@echo "Examples:"
@@ -26,6 +27,7 @@ help:
 	@echo "  make run"
 	@echo "  make run-cli FILES='*.jpg *.png'"
 	@echo "  make install"
+	@echo "  make dmg"
 
 # Build targets
 build:
@@ -135,6 +137,15 @@ package: build
 	@cp README.md dist/
 	@tar -czf dist/ai-image-renamer-macos.tar.gz -C dist AIImageRenamer README.md
 	@echo "✅ Package created: dist/ai-image-renamer-macos.tar.gz"
+
+dmg:
+	@echo "💿 Creating DMG installer..."
+	@./create_dmg.sh
+
+dmg-clean:
+	@echo "🧹 Cleaning DMG build artifacts..."
+	@rm -rf build dmg_temp *.dmg
+	@echo "✅ DMG artifacts cleaned!"
 
 # Quick development cycle
 dev: clean debug run-debug

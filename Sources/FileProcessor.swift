@@ -54,8 +54,11 @@ class FileProcessor {
             
             // Get AI suggestion
             print("🤖 Getting AI suggestion...")
-            guard let suggestion = await client.suggestFilename(for: filePath, fileType: fileType) else {
-                print("❌ Failed to get AI suggestion")
+            let suggestion: FilenameResponse
+            do {
+                suggestion = try await client.suggestFilename(for: filePath, fileType: fileType)
+            } catch {
+                print("❌ Failed: \(error.localizedDescription)")
                 continue
             }
             

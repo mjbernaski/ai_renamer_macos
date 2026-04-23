@@ -34,6 +34,38 @@ struct LMStudioModelsResponse: Codable {
     }
 }
 
+enum SuggestFilenameError: Error, LocalizedError {
+    case fileUnreadable(String)
+    case imageDecodeFailed(String)
+    case noModelSelected
+    case invalidURL
+    case httpError(Int, String)
+    case emptyContent
+    case parseFailure(String)
+    case network(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .fileUnreadable(let path):
+            return "cannot read \(path) (check System Settings → Privacy & Security → Files and Folders, or Full Disk Access)"
+        case .imageDecodeFailed(let path):
+            return "could not decode image at \(path)"
+        case .noModelSelected:
+            return "no model selected (reconnect)"
+        case .invalidURL:
+            return "invalid server URL"
+        case .httpError(let code, let body):
+            return "HTTP \(code): \(body.prefix(160))"
+        case .emptyContent:
+            return "model returned empty content (try loading a different model in LM Studio)"
+        case .parseFailure(let raw):
+            return "could not parse JSON from model output: \(raw.prefix(160))"
+        case .network(let err):
+            return "network error: \(err.localizedDescription)"
+        }
+    }
+}
+
 class LMStudioClient {
     private let baseURL: String
     private let session: URLSession
@@ -73,20 +105,20 @@ class LMStudioClient {
         return false
     }
     
-    func suggestFilename(for filePath: String, fileType: FileType) async -> FilenameResponse? {
-        guard let model = currentModel else { return nil }
-        
+    func suggestFilename(for filePath: String, fileType: FileType) async throws -> FilenameResponse {
+        guard let model = currentModel else { throw SuggestFilenameError.noModelSelected }
+
         switch fileType {
         case .image:
-            return await suggestFilenameForImage(filePath, model: model)
+            return try await suggestFilenameForImage(filePath, model: model)
         case .pdf:
-            return await suggestFilenameForPDF(filePath, model: model)
+            return try await suggestFilenameForPDF(filePath, model: model)
         }
     }
-    
-    private func suggestFilenameForImage(_ imagePath: String, model: String) async -> FilenameResponse? {
-        guard let imageData = loadImageData(from: imagePath) else { return nil }
-        guard let url = URL(string: "\(baseURL)/v1/chat/completions") else { return nil }
+
+    private func suggestFilenameForImage(_ imagePath: String, model: String) async throws -> FilenameResponse {
+        let imageData = try loadImageData(from: imagePath)
+        guard let url = URL(string: "\(baseURL)/v1/chat/completions") else { throw SuggestFilenameError.invalidURL }
         
         let prompt = """
         Analyze this image and suggest a descriptive filename that would be appropriate for saving it on a Mac.
@@ -124,13 +156,14 @@ class LMStudioClient {
                 ]
             ],
             "temperature": 0.3,
-            "max_tokens": 300
+            "max_tokens": 500,
+            "reasoning_effort": "none"
         ]
-        
-        return await makeRequest(url: url, payload: payload)
+
+        return try await makeRequest(url: url, payload: payload)
     }
-    
-    private func suggestFilenameForPDF(_ pdfPath: String, model: String) async -> FilenameResponse? {
+
+    private func suggestFilenameForPDF(_ pdfPath: String, model: String) async throws -> FilenameResponse {
         guard let pdfContent = extractPDFContent(from: pdfPath) else {
             return FilenameResponse(
                 suggestedFilename: "document",
@@ -138,8 +171,8 @@ class LMStudioClient {
                 confidence: 1
             )
         }
-        
-        guard let url = URL(string: "\(baseURL)/v1/chat/completions") else { return nil }
+
+        guard let url = URL(string: "\(baseURL)/v1/chat/completions") else { throw SuggestFilenameError.invalidURL }
         
         let prompt = """
         Analyze this PDF document content and suggest a descriptive filename that would be appropriate for saving it on a Mac.
@@ -173,40 +206,50 @@ class LMStudioClient {
                 ]
             ],
             "temperature": 0.3,
-            "max_tokens": 300
+            "max_tokens": 500,
+            "reasoning_effort": "none"
         ]
-        
-        return await makeRequest(url: url, payload: payload)
+
+        return try await makeRequest(url: url, payload: payload)
     }
-    
-    private func makeRequest(url: URL, payload: [String: Any]) async -> FilenameResponse? {
+
+    private func makeRequest(url: URL, payload: [String: Any]) async throws -> FilenameResponse {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
+
+        let data: Data
+        let response: URLResponse
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-            let (data, response) = try await session.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else { return nil }
-            
-            let lmResponse = try JSONDecoder().decode(LMStudioResponse.self, from: data)
-            let content = lmResponse.choices.first?.message.content ?? ""
-            
-            let result = parseFilenameResponse(from: content)
-            if result == nil {
-                print("❌ Failed to parse JSON response. Raw content: \(content.prefix(200))...")
-            }
-            return result
+            (data, response) = try await session.data(for: request)
         } catch {
-            print("❌ Request failed: \(error)")
-            if let data = request.httpBody,
-               let requestString = String(data: data, encoding: .utf8) {
-                print("Request body: \(requestString.prefix(200))...")
-            }
-            return nil
+            throw SuggestFilenameError.network(error)
         }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SuggestFilenameError.network(URLError(.badServerResponse))
+        }
+        if httpResponse.statusCode != 200 {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw SuggestFilenameError.httpError(httpResponse.statusCode, body)
+        }
+
+        let lmResponse: LMStudioResponse
+        do {
+            lmResponse = try JSONDecoder().decode(LMStudioResponse.self, from: data)
+        } catch {
+            let raw = String(data: data, encoding: .utf8) ?? ""
+            throw SuggestFilenameError.parseFailure(raw)
+        }
+        let content = lmResponse.choices.first?.message.content ?? ""
+        if content.isEmpty {
+            throw SuggestFilenameError.emptyContent
+        }
+        guard let parsed = parseFilenameResponse(from: content) else {
+            throw SuggestFilenameError.parseFailure(content)
+        }
+        return parsed
     }
     
     private func parseFilenameResponse(from content: String) -> FilenameResponse? {
@@ -320,12 +363,24 @@ class LMStudioClient {
         return sanitized
     }
     
-    private func loadImageData(from path: String) -> String? {
-        guard let image = NSImage(contentsOfFile: path) else { return nil }
-        guard let tiffData = image.tiffRepresentation else { return nil }
-        guard let bitmapRep = NSBitmapImageRep(data: tiffData) else { return nil }
-        guard let jpegData = bitmapRep.representation(using: .jpeg, properties: [:]) else { return nil }
-        
+    private func loadImageData(from path: String) throws -> String {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path) else {
+            throw SuggestFilenameError.fileUnreadable(path)
+        }
+        // A successful read proves we have both Unix perms and TCC grant.
+        let fileData: Data
+        do {
+            fileData = try Data(contentsOf: URL(fileURLWithPath: path))
+        } catch {
+            throw SuggestFilenameError.fileUnreadable(path)
+        }
+        guard let image = NSImage(data: fileData),
+              let tiffData = image.tiffRepresentation,
+              let bitmapRep = NSBitmapImageRep(data: tiffData),
+              let jpegData = bitmapRep.representation(using: .jpeg, properties: [:]) else {
+            throw SuggestFilenameError.imageDecodeFailed(path)
+        }
         return jpegData.base64EncodedString()
     }
     
