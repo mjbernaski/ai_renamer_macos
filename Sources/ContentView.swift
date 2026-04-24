@@ -101,25 +101,43 @@ struct ExpandedView: View {
     var body: some View {
         VStack(spacing: 12) {
             // Ultra-compact header
-            VStack(spacing: 6) {
-                Text("AI Renamer")
-                    .font(.system(size: 16, weight: .semibold))
+            ZStack {
+                VStack(spacing: 6) {
+                    Text("AI Renamer")
+                        .font(.system(size: 16, weight: .semibold))
 
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(viewModel.isConnected ? Color.green : Color.red)
-                        .frame(width: 5, height: 5)
-                    Text(viewModel.isConnected ? "Ready" : "Offline")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(viewModel.isConnected ? Color.green : Color.red)
+                            .frame(width: 5, height: 5)
+                        Text(viewModel.isConnected ? "Ready" : "Offline")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+
+                    if !viewModel.modelName.isEmpty {
+                        Text(viewModel.modelName)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
-
-                if !viewModel.modelName.isEmpty {
-                    Text(viewModel.modelName)
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                HStack {
+                    Spacer()
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            viewModel.isExpanded = false
+                        }
+                        NotificationCenter.default.post(name: .collapseWindow, object: nil)
+                    }) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Collapse")
+                    .padding(.trailing, 4)
                 }
             }
             .padding(.top, 8)
@@ -169,17 +187,49 @@ struct ExpandedView: View {
             // Compact Results Area
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Label("Output", systemImage: "text.alignleft")
+                    Label(viewModel.showHistory ? "History" : "Output",
+                          systemImage: viewModel.showHistory ? "clock.arrow.circlepath" : "text.alignleft")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.secondary)
                     Spacer()
+                    if viewModel.showHistory && !viewModel.history.isEmpty {
+                        Button(action: { viewModel.clearHistory() }) {
+                            Text("Clear")
+                                .font(.system(size: 10))
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    Button(action: { viewModel.showHistory.toggle() }) {
+                        Image(systemName: viewModel.showHistory ? "text.alignleft" : "clock.arrow.circlepath")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.borderless)
+                    .help(viewModel.showHistory ? "Show current output" : "Show rename history")
                 }
 
                 ScrollView {
-                    Text(viewModel.resultsText)
-                        .font(.system(size: 11, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(6)
+                    if viewModel.showHistory {
+                        if viewModel.history.isEmpty {
+                            Text("No renames yet")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(6)
+                        } else {
+                            LazyVStack(alignment: .leading, spacing: 6) {
+                                ForEach(viewModel.history) { entry in
+                                    HistoryRow(entry: entry,
+                                               onReveal: { viewModel.revealInFinder(entry) })
+                                }
+                            }
+                            .padding(6)
+                        }
+                    } else {
+                        Text(viewModel.resultsText)
+                            .font(.system(size: 11, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                    }
                 }
                 .background(Color.black.opacity(0.04))
                 .overlay(
@@ -227,6 +277,51 @@ struct ExpandedView: View {
     }
 }
 
+@available(macOS 14.0, *)
+struct HistoryRow: View {
+    let entry: RenameHistoryEntry
+    let onReveal: () -> Void
+
+    private static let relative: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(entry.newName)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 6)
+                Text(Self.relative.localizedString(for: entry.date, relativeTo: Date()))
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.system(size: 8))
+                    .foregroundColor(.secondary)
+                Text(entry.originalName)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 4)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: onReveal)
+        .contextMenu {
+            Button("Reveal in Finder", action: onReveal)
+        }
+        .help("Double-click to reveal in Finder\n\(entry.directory)")
+    }
+}
+
 @MainActor
 class ContentViewModel: ObservableObject {
     @Published var selectedFiles: [String] = []
@@ -243,9 +338,13 @@ class ContentViewModel: ObservableObject {
     
     private let client: LMStudioClient
     private var suggestions: [FilenameResponse?] = []
-    
+    private let historyStore = RenameHistoryStore.shared
+    @Published var history: [RenameHistoryEntry] = []
+    @Published var showHistory: Bool = false
+
     init(host: String, port: Int) {
         self.client = LMStudioClient(host: host, port: port)
+        self.history = historyStore.load()
     }
     
     func testConnection() async {
@@ -433,6 +532,14 @@ class ContentViewModel: ObservableObject {
                     logMessage(" (seq)")
                 }
 
+                let entry = RenameHistoryEntry(
+                    directory: originalURL.deletingLastPathComponent().path,
+                    originalName: originalURL.lastPathComponent,
+                    newName: newURL.lastPathComponent
+                )
+                history.insert(entry, at: 0)
+                historyStore.append(entry)
+
                 renamedCount += 1
             } catch {
                 logMessage("✗ \(originalURL.lastPathComponent)")
@@ -440,22 +547,31 @@ class ContentViewModel: ObservableObject {
         }
 
         logMessage("\nRenamed \(renamedCount) file(s)\n")
-        clearAll()
+        clearAll(collapse: true)
     }
     
-    func clearAll() {
+    func clearHistory() {
+        history = []
+        historyStore.clear()
+    }
+
+    func revealInFinder(_ entry: RenameHistoryEntry) {
+        let path = (entry.directory as NSString).appendingPathComponent(entry.newName)
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    func clearAll(collapse: Bool = false) {
         selectedFiles = []
         suggestions = []
         resultsText = ""
         canProcess = isConnected
         canRename = false
-        logMessage("")
-        // Collapse back to compact view
-        withAnimation(.easeInOut(duration: 0.3)) {
-            isExpanded = false
+        if collapse {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                isExpanded = false
+            }
+            NotificationCenter.default.post(name: .collapseWindow, object: nil)
         }
-        // Trigger window resize
-        NotificationCenter.default.post(name: .collapseWindow, object: nil)
     }
     
     private func logMessage(_ message: String) {

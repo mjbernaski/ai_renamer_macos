@@ -94,6 +94,11 @@ class FileProcessor {
                     if newURL.lastPathComponent != finalName + "." + url.pathExtension {
                         print("   (sequence number added)")
                     }
+                    RenameHistoryStore.shared.append(RenameHistoryEntry(
+                        directory: url.deletingLastPathComponent().path,
+                        originalName: originalName,
+                        newName: newURL.lastPathComponent
+                    ))
                     renamed += 1
                 } catch {
                     print("❌ Failed to rename: \(error.localizedDescription)")
