@@ -187,28 +187,54 @@ struct ExpandedView: View {
             // Compact Results Area
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Label(viewModel.showHistory ? "History" : "Output",
-                          systemImage: viewModel.showHistory ? "clock.arrow.circlepath" : "text.alignleft")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    if viewModel.showHistory && !viewModel.history.isEmpty {
+                    Picker("", selection: $viewModel.viewMode) {
+                        ForEach(ResultsViewMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.mini)
+
+                    if viewModel.viewMode == .history && !viewModel.history.isEmpty {
                         Button(action: { viewModel.clearHistory() }) {
                             Text("Clear")
                                 .font(.system(size: 10))
                         }
                         .buttonStyle(.borderless)
+                    } else if viewModel.viewMode == .session && !viewModel.sessionRenames.isEmpty {
+                        Button(action: { viewModel.clearSession() }) {
+                            Text("Clear")
+                                .font(.system(size: 10))
+                        }
+                        .buttonStyle(.borderless)
                     }
-                    Button(action: { viewModel.showHistory.toggle() }) {
-                        Image(systemName: viewModel.showHistory ? "text.alignleft" : "clock.arrow.circlepath")
-                            .font(.system(size: 11))
-                    }
-                    .buttonStyle(.borderless)
-                    .help(viewModel.showHistory ? "Show current output" : "Show rename history")
                 }
 
                 ScrollView {
-                    if viewModel.showHistory {
+                    switch viewModel.viewMode {
+                    case .output:
+                        Text(viewModel.resultsText)
+                            .font(.system(size: 11, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                    case .session:
+                        if viewModel.sessionRenames.isEmpty {
+                            Text("No files renamed this session")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(6)
+                        } else {
+                            LazyVStack(alignment: .leading, spacing: 6) {
+                                ForEach(viewModel.sessionRenames) { entry in
+                                    HistoryRow(entry: entry,
+                                               onReveal: { viewModel.revealInFinder(entry) })
+                                }
+                            }
+                            .padding(6)
+                        }
+                    case .history:
                         if viewModel.history.isEmpty {
                             Text("No renames yet")
                                 .font(.system(size: 11))
@@ -224,11 +250,6 @@ struct ExpandedView: View {
                             }
                             .padding(6)
                         }
-                    } else {
-                        Text(viewModel.resultsText)
-                            .font(.system(size: 11, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(6)
                     }
                 }
                 .background(Color.black.opacity(0.04))
@@ -340,7 +361,8 @@ class ContentViewModel: ObservableObject {
     private var suggestions: [FilenameResponse?] = []
     private let historyStore = RenameHistoryStore.shared
     @Published var history: [RenameHistoryEntry] = []
-    @Published var showHistory: Bool = false
+    @Published var sessionRenames: [RenameHistoryEntry] = []
+    @Published var viewMode: ResultsViewMode = .output
 
     init(host: String, port: Int) {
         self.client = LMStudioClient(host: host, port: port)
@@ -538,6 +560,7 @@ class ContentViewModel: ObservableObject {
                     newName: newURL.lastPathComponent
                 )
                 history.insert(entry, at: 0)
+                sessionRenames.insert(entry, at: 0)
                 historyStore.append(entry)
 
                 renamedCount += 1
@@ -547,12 +570,19 @@ class ContentViewModel: ObservableObject {
         }
 
         logMessage("\nRenamed \(renamedCount) file(s)\n")
-        clearAll(collapse: true)
+        if renamedCount > 0 {
+            viewMode = .session
+        }
+        clearAll(collapse: false)
     }
     
     func clearHistory() {
         history = []
         historyStore.clear()
+    }
+
+    func clearSession() {
+        sessionRenames = []
     }
 
     func revealInFinder(_ entry: RenameHistoryEntry) {
@@ -609,4 +639,28 @@ class ContentViewModel: ObservableObject {
 extension Notification.Name {
     static let expandWindow = Notification.Name("expandWindow")
     static let collapseWindow = Notification.Name("collapseWindow")
+}
+
+enum ResultsViewMode: String, CaseIterable, Identifiable {
+    case output
+    case session
+    case history
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .output: return "Output"
+        case .session: return "Session"
+        case .history: return "History"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .output: return "text.alignleft"
+        case .session: return "list.bullet.rectangle"
+        case .history: return "clock.arrow.circlepath"
+        }
+    }
 }
