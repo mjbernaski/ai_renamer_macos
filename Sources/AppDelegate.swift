@@ -4,18 +4,16 @@ import SwiftUI
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
-    private let host: String
-    private let port: Int
+    private let config: AppConfig
 
-    init(host: String, port: Int) {
-        self.host = host
-        self.port = port
+    init(config: AppConfig) {
+        self.config = config
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the main window
-        let contentView = ContentView(host: host, port: port)
+        let contentView = ContentView(config: config)
 
         // Start with compact window size
         window = NSWindow(
@@ -49,6 +47,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Ensure the app stays running
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        enableLaunchAtLoginOnFirstRun()
+    }
+
+    /// On the very first launch, opt the app into launching at login. After that
+    /// we never touch it again, so the user's toggle choice always wins.
+    private func enableLaunchAtLoginOnFirstRun() {
+        let key = "didConfigureLaunchAtLogin"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        if LaunchAtLogin.isSupported {
+            LaunchAtLogin.setEnabled(true)
+        }
     }
 
     @objc private func expandWindow() {

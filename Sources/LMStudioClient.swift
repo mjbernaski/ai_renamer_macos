@@ -70,12 +70,28 @@ class LMStudioClient {
     private let baseURL: String
     private let session: URLSession
     private(set) var currentModel: String?
-    
-    init(host: String = "127.0.0.1", port: Int = 1234) {
+    private(set) var availableModels: [String] = []
+    // A model the user picked in the UI; preserved across reconnects/polls.
+    private var userSelectedModel: String?
+    // Preferred model from config, auto-selected when available.
+    private let preferredModel: String?
+    // When true, request the model not to emit reasoning/"thinking" output.
+    private let disableThinking: Bool
+
+    init(host: String = "127.0.0.1", port: Int = 1234,
+         preferredModel: String? = nil, disableThinking: Bool = true) {
         self.baseURL = "http://\(host):\(port)"
         self.session = URLSession.shared
+        self.preferredModel = preferredModel
+        self.disableThinking = disableThinking
     }
-    
+
+    /// Explicitly choose the model to use (overrides auto-selection).
+    func setModel(_ id: String) {
+        userSelectedModel = id
+        currentModel = id
+    }
+
     func testConnection() async -> Bool {
         guard let url = URL(string: "\(baseURL)/v1/models") else { return false }
 
@@ -86,10 +102,23 @@ class LMStudioClient {
                   httpResponse.statusCode == 200 else { return false }
 
             let modelsResponse = try JSONDecoder().decode(LMStudioModelsResponse.self, from: data)
+            availableModels = modelsResponse.data.map { $0.id }
 
-            // Prefer qwen/qwen2.5-vl-7b if available
-            if let preferredModel = modelsResponse.data.first(where: { $0.id.contains("qwen2.5-vl-7b") || $0.id.contains("qwen/qwen2.5-vl-7b") }) {
-                currentModel = preferredModel.id
+            // Honor an explicit user choice if it's still available.
+            if let chosen = userSelectedModel, availableModels.contains(chosen) {
+                currentModel = chosen
+                return true
+            }
+
+            // Prefer the configured default model if it's available.
+            if let preferred = preferredModel, availableModels.contains(preferred) {
+                currentModel = preferred
+                return true
+            }
+
+            // Then prefer qwen/qwen2.5-vl-7b if available
+            if let visionModel = modelsResponse.data.first(where: { $0.id.contains("qwen2.5-vl-7b") || $0.id.contains("qwen/qwen2.5-vl-7b") }) {
+                currentModel = visionModel.id
                 return true
             }
 
@@ -139,7 +168,7 @@ class LMStudioClient {
         }
         """
         
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": model,
             "messages": [
                 [
@@ -156,9 +185,9 @@ class LMStudioClient {
                 ]
             ],
             "temperature": 0.3,
-            "max_tokens": 500,
-            "reasoning_effort": "none"
+            "max_tokens": 2500
         ]
+        if disableThinking { payload["reasoning_effort"] = "none" }
 
         return try await makeRequest(url: url, payload: payload)
     }
@@ -197,7 +226,7 @@ class LMStudioClient {
         }
         """
         
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": model,
             "messages": [
                 [
@@ -206,9 +235,9 @@ class LMStudioClient {
                 ]
             ],
             "temperature": 0.3,
-            "max_tokens": 500,
-            "reasoning_effort": "none"
+            "max_tokens": 2500
         ]
+        if disableThinking { payload["reasoning_effort"] = "none" }
 
         return try await makeRequest(url: url, payload: payload)
     }

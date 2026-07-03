@@ -93,6 +93,7 @@ demo_files/
 
 # Distribution
 dist/
+*.dmg
 
 # Xcode project files (we're using Swift Package Manager)
 *.xcodeproj

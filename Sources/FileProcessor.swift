@@ -3,8 +3,13 @@ import Foundation
 class FileProcessor {
     private let client: LMStudioClient
     
-    init(host: String = "127.0.0.1", port: Int = 1234) {
-        self.client = LMStudioClient(host: host, port: port)
+    init(config: AppConfig = AppConfig()) {
+        self.client = LMStudioClient(
+            host: config.host,
+            port: config.port,
+            preferredModel: config.defaultModel,
+            disableThinking: config.disableThinking
+        )
     }
     
     func processFiles(_ filePaths: [String], dryRun: Bool = false, autoApprove: Bool = false) async throws {
